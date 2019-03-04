@@ -3,9 +3,9 @@ class MDLJ_lib :
   def __init__(self, N, Lr):
     from numpy import zeros
     #-start-------------------------
-    self.t = 0.
-    self.mass= 1.
-    self.L   = Lr
+    self.t = 0.   # current timestep
+    self.mass= 1. # particle's mass
+    self.L   = Lr # MD-box's side length
     self.NHchi = 0.0
     self.NHxi = 0.0
     self.itemp = 0.0
@@ -13,29 +13,37 @@ class MDLJ_lib :
     self.Q   = 100.*N
     #eps     = 1.
     #sig     = 1.
+    # positions arrays
     self.rx      = zeros( N )
     self.ry      = zeros( N )
     self.rz      = zeros( N )
+    # momenta arrays
     self.px      = zeros( N )
     self.py      = zeros( N )
     self.pz      = zeros( N )
+    # force attractive 
     self.fax     = zeros( N )
     self.fay     = zeros( N )
     self.faz     = zeros( N )
+    # force repulsive
     self.fdx     = zeros( N )
     self.fdy     = zeros( N )
     self.fdz     = zeros( N )
+    # ???
     self.kg      = 512
     self.gcount  = zeros( self.kg )
+    # Energies
     self.ekin    = 0.0
     self.ene     = 0.0
     self.etot    = 0.0
+    # external pressure ?
     self.pext    = 1.
-    # L can fluctuate rmax for gdr limited to initial L_ref/2.5
+    # L can fluctuate rmax for gdr limited to initial L_ref/2.5 (??)
     rmax = Lr/2.5
     self.r2max = rmax * rmax
     self.ldel = rmax/self.kg
 
+  # clean up files generated in previous run
   def clean_run(self, keepinput=False):
       from glob import glob
       from os import remove
@@ -50,6 +58,7 @@ class MDLJ_lib :
               remove(filename)
       print("# cleaning previous run")
 
+  # read input file: it stores: Nr-> Number of particles, t -> timestep of the configuration, r,p -> positions and momenta of the particles 
   def read_input(self, N, conf_in='conf_in.b'):
       import pickle
       with open(conf_in, 'rb') as ftrj:
@@ -59,23 +68,27 @@ class MDLJ_lib :
              print(' ??? reading %d particle from step %d configuration expected %d' % (Nr,t,N) )
          ( self.rx, self.ry, self.rz, self.L ) = pickle.load( ftrj)
          ( self.px, self.py, self.pz, self.PL) = pickle.load( ftrj)
-
+  
+  # dump position and momenta
   def write_input(self, N, t, conf_out='conf_in.b'):
       import pickle
       with open(conf_out, 'wb') as ftrj:
           pickle.dump( (N, t) , ftrj, pickle.HIGHEST_PROTOCOL)
           pickle.dump( ( self.rx, self.ry, self.rz, self.L ), ftrj, pickle.HIGHEST_PROTOCOL)
           pickle.dump( ( self.px, self.py, self.pz, self.PL), ftrj, pickle.HIGHEST_PROTOCOL)
-
+  
+  # create fcc lattice
   def fcc(self, m, verbose=False):
       from numpy import  random, rint
       print( "# number of lattice cells m^3 = %d" % (m**3) )
-      a = self.L/m
+      a = self.L/m        # self.L = a*m
       print( "# lattice parameter a = %f" % a )
-      natom = 4*m**3
+      natom = 4*m**3      # fcc has 1/8 * 8 + 1/2 * 6 atoms per unit cell
       print( "# number of particles N = %d " % natom )
       print( "# sides of md-box L = [ %.2f %.2f %.2f ]" % (a*m, a*m, a*m) )
+      # counter
       j  = 0
+      # center coordinates
       xi = 0.
       yi = 0.
       zi = 0.
@@ -86,6 +99,7 @@ class MDLJ_lib :
       for nx in range(m) :
           for ny in range(m) :
              for nz in range(m) :
+                 # j -> corner atom
                  self.rx[j] = xi + a*nx + rrx[j]
                  self.ry[j] = yi + a*ny + rry[j]
                  self.rz[j] = zi + a*nz + rrz[j]
@@ -97,6 +111,7 @@ class MDLJ_lib :
                  self.ry[j]-= rint(self.ry[j])
                  self.rz[j]/= self.L
                  self.rz[j]-= rint(self.rz[j])
+                 # j+1 -> lower center (xy)
                  j +=1
                  self.rx[j] = xi + a*nx + rrx[j] + 0.5*a
                  self.ry[j] = yi + a*ny + rry[j] + 0.5*a
@@ -109,6 +124,7 @@ class MDLJ_lib :
                  self.ry[j]-= rint(self.ry[j])
                  self.rz[j]/= self.L
                  self.rz[j]-= rint(self.rz[j])
+                 # j+2 -> front center (xz)
                  j +=1
                  self.rx[j] = xi + a*nx + rrx[j] + 0.5*a
                  self.ry[j] = yi + a*ny + rry[j]
@@ -121,6 +137,7 @@ class MDLJ_lib :
                  self.ry[j]-= rint(self.ry[j])
                  self.rz[j]/= self.L
                  self.rz[j]-= rint(self.rz[j])
+                 # j+3 -> side center (yz)
                  j +=1
                  self.rx[j] = xi + a*nx + rrx[j]
                  self.ry[j] = yi + a*ny + rry[j] + 0.5*a
@@ -137,6 +154,217 @@ class MDLJ_lib :
 
       print( "# initial atom disposition built on fcc lattice")
 
+  # Creates a list of charges, one for each particle arranged as an fcc lattice {MDLJ_lib:fcc}
+  # N: number of particles
+  # q000 -> charge for particles in (0,0,0)
+  # qhh0 -> charge for particles in (1/2,1/2,0)
+  # qh0h -> charge for particles in (1/2,0,1/2)
+  # q0hh -> charge for particles in (0,1/2,1/2)
+  # 
+  # @CAREFUL 
+  # dependes heavily on  how {MDLJ_lib:fcc} arranged the particles in the list (see comments inside)
+  def fcc_charges(self,N,q000,qhh0,qh0h,q0hh):
+    from numpy import zeros,rint
+    charges = zeros( N )
+    # N = 4* m^3 -> m = (N/4)^(1/3)
+    m = (N/4)**(1/3)
+    mint = int(rint(m))
+    rng = range(mint)
+    j = 0
+    # x -> y -> z
+    # j -> corner atom
+    # j+1 -> lower center (xy)
+    # j+2 -> front center (xz)
+    # j+3 -> side center (yz)
+    while (j<=N-3):
+      charges[j] = q000
+      charges[j+1] = qhh0
+      charges[j+2] = qh0h
+      charges[j+3] = q0hh
+      j+=4
+    return charges
+
+# N -> number of particles
+# nstep -> number of integration steps
+# dt -> timestep in what units? ( ns? see NVE_lj.py:42 )
+# freq -> measure frequency, measures are execute every nfreq timesteps
+# Bz -> value of External Magnetic Field (in what units?)
+# q -> Charges (in what units?), a single value or one for each particle
+  def magnetic_vel_verlet(self, N, nstep, dt, freq=1, Bz=1, q=1):
+    from numpy import sum, rint
+    from calcener import calcener
+
+    #import pickle
+    tt   = 0
+    ept  = 0.
+    ekt  = 0.
+    eptsq = 0.
+    ektsq = 0.
+    etsq = 0.
+    vir = 0.
+    itempavg = 0.
+    ftempout = 'temperature.out'
+    # initial call to compute starting energies, forces and virial
+    epa,epd,vira,vird,self.fax,self.fdx,self.fay,self.fdy,self.faz,self.fdz = calcener(self.rx,self.ry,self.rz,N,self.L)
+    # Rescale Forces
+    self.fax/= self.L**12
+    self.fdx/= self.L**6
+    self.fay/= self.L**12
+    self.fdy/= self.L**6
+    self.faz/= self.L**12
+    self.fdz/= self.L**6
+    # Rescale Energy and Virial
+    enep = epa/self.L**12+epd/self.L**6
+    virp = vira/self.L**12 + vird/self.L**6
+    # Calculate Kinetic Energy, p is rescaled: self.p = P*L -> P = self.p/L 
+    enek = 0.5*sum( self.px*self.px + self.py*self.py + self.pz*self.pz )/(self.mass*self.L**2)
+    self.itemp = self.calc_temp( N )
+    itempavg = self.write_avg(self.itemp, itempavg, tt+1, ftempout)
+    vcmx = sum(self.px)
+    vcmy = sum(self.py)
+    vcmz = sum(self.pz)
+    data = 'run.out'
+    out_data = open(data, 'a')
+    out_data.write("#   'time'    'enep'    'enek'  'vir_p'   'enet'    'vcmx'   'vcmy'   'vcmz'    'temp'\n")
+    out_data.write(" %8.3f %9.4g %9.4g %9.4g %10.7f %7.2e %7.2e %7.2e %9.4g\n" % (self.t, enep/N, enek/N, virp, enep+enek, vcmx, vcmy, vcmz, self.itemp))
+    print( "   'time'    'enep'    'enek'  'vir_p'   'enet'    'vcmx'   'vcmy'   'vcmz'   'temp'")
+    print (" %8.3f %9.4g %9.4g %9.4g %10.7f %7.2e %7.2e %7.2e %9.4g" % (self.t, enep/N, enek/N, virp, enep+enek, vcmx, vcmy, vcmz, self.itemp))
+    # constants
+    # omega -> q B / 2 mass 
+    omega = q*Bz/(2.*self.mass)
+
+    # half timestep
+    dth=0.5*dt 
+    # 1/4 timestep
+    dthh = dth*0.5
+    # @NOTE 
+    # Positions are rescaled! [Uppercase-> real value  Lowercase-> rescaled value]
+    # R' = P/m + om R -> (L*r)' = (p/L)/m +om L*r -> r' = p/(m*L^2) + om r )
+    mRes = self.mass*self.L**2
+    dtm=dt/mRes
+    # half timestep
+    dtmh=dtm*0.5
+    # @NOTE
+    # Momenta should be rescaled! [Uppercase-> real value  Lowercase-> rescaled value]
+        # P' = F + mo*R -om*P -> (p/L)' = f/L + mo r*L -om p/L -> p' = f + mo r*L^2 -om p
+        # r = R/L => p = P*L, f = F*L
+    mo2 = mRes*(omega**2)
+    # for PBC
+    mom = mRes*omega
+    
+    for pas in range(nstep) :
+        vcmx = 0.
+        vcmy = 0.
+        vcmz = 0.
+        # advance one step
+        self.t += dt
+        
+        # momenta first 
+        # p' = f + mo r*L^2 -om p
+        
+        # update pz
+        self.pz += (self.faz+self.fdz)*dth
+        # update 1/4 timestep py 
+        self.py += ((self.fay+self.fdy) - mo2*self.ry - omega*self.px)*dthh
+        # update 1/2 timestep px 
+        self.px += ((self.fax+self.fdx) - mo2*self.rx + omega*self.py )*dth
+        # update 1/4 timestep py 
+        self.py += ((self.fay+self.fdy) - mo2*self.ry - omega*self.px)*dthh
+        
+        # positions second  
+        # r' = p/(m*L^2) + om r
+        
+        # update rz
+        self.rz += dtm*self.pz
+        # update 1/2 timestep ry
+        self.ry += dtmh*self.py - dth*omega*self.rx
+        # update rx
+        self.rx += dtm*self.px + dt*omega*self.ry
+        # update 1/2 timestep ry
+        self.ry += dtmh*self.py - dth*omega*self.rx
+
+        # Periodic Boundary Conditions
+        
+        # x -> x - L <=> py -> py - mom*L^2 (rint == 1)
+        # x -> x + L <=> py -> py + mom*L^2 (rint == -1)
+        pbc = rint(self.rx)
+        self.rx -= pbc
+        self.py -= mom * pbc
+        
+        # y -> y - L <=> px -> px + mom*L^2 (rint == 1)
+        # y -> y + L <=> px -> px - mom*L^2 (rint == -1)
+        pbc = rint(self.ry)
+        self.ry -= pbc
+        self.px += mom * pbc
+        
+        # z -> z - L (rint == 1)
+        # z -> z + L (rint == -1)
+        self.rz -= rint(self.rz)
+        
+        # @TODO
+        # add neighbour list update here
+
+        # compute forces
+        epa,epd,vira,vird,self.fax,self.fdx,self.fay,self.fdy,self.faz,self.fdz = calcener(self.rx,self.ry,self.rz,N,self.L)
+        
+        # Rescale Energy/Virial
+        enep = epa/self.L**12 + epd/self.L**6
+        virp = vira/self.L**12 + vird/self.L**6
+        
+        # Rescale Forces
+        self.fax/= self.L**12
+        self.fdx/= self.L**6
+        
+        self.fay/= self.L**12
+        self.fdy/= self.L**6
+        
+        self.faz/= self.L**12
+        self.fdz/= self.L**6
+        
+        # momenta thrid
+        # p' = f + mo r*L^2 -om p
+
+        # update pz
+        self.pz += (self.faz+self.fdz)*dth
+        # update 1/4 timestep py 
+        self.py += ((self.fay+self.fdy) - mo2*self.ry - omega*self.px)*dthh
+        # update 1/2 timestep px 
+        self.px += ((self.fax+self.fdx) - mo2*self.rx + omega*self.py )*dth
+        # update 1/4 timestep py 
+        self.py += ((self.fay+self.fdy) - mo2*self.ry - omega*self.px)*dthh
+        
+        
+        # Computations
+        vcmx = sum(self.px)
+        vcmy = sum(self.py)
+        vcmz = sum(self.pz)
+        enek = 0.5*sum( self.px*self.px + self.py*self.py + self.pz*self.pz )/(self.mass*self.L**2)
+        # computing gdr and single step printout ...
+        ekt += enek
+        ept += enep
+        vir += virp
+        ektsq += enek*enek
+        eptsq += enep*enep
+        etsq += (enek+enep)*(enek+enep)
+        if (pas+1)%freq==0 :
+           # compute g(R)
+           self.calc_gdr( N )
+           # compute and write out running averages (for example temperature)
+           self.itemp = self.calc_temp(N)
+           itempavg = self.write_avg(self.itemp, itempavg, tt+1, ftempout)
+           # save configuration for VMD in xyz format
+           self.write_xyz( N )
+           # save Phase-Space configuration for correlation functions
+           self.write_PStraj( N )
+           out_data.write(" %8.3f %9.4g %9.4g %9.4g %10.7f %7.2e %7.2e %7.2e %9.4g\n" % (self.t, enep/N, enek/N, virp, enep+enek, vcmx, vcmy, vcmz, self.itemp))
+           print (" %8.3f %9.4g %9.4g %9.4g %10.7f %7.2e %7.2e %7.2e %9.4g" % (self.t, enep/N, enek/N, virp, enep+enek, vcmx, vcmy,vcmz, self.itemp) )
+           tt += 1
+        # end of md run
+    
+    # store final configuration
+    self.write_input(N, self.t, conf_out='conf_in.b')
+    return (tt, ekt, ept, vir, ektsq, eptsq, etsq)
+
   def vel_verlet(self, N, nstep, dt, freq=1):
     from numpy import sum, rint
     from calcener import calcener
@@ -150,7 +378,7 @@ class MDLJ_lib :
     vir = 0.
     itempavg = 0.
     ftempout = 'temperature.out'
-    dth=0.5*dt
+    dth=0.5*dt # half timestep
     dtm=dt/(self.mass*self.L**2)
     # initial call to compute starting energies, forces and virial
     epa,epd,vira,vird,self.fax,self.fdx,self.fay,self.fdy,self.faz,self.fdz = calcener(self.rx,self.ry,self.rz,N,self.L)
